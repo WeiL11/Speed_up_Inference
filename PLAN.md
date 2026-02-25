@@ -111,7 +111,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 2 — Efficient Attention & Kernel Optimization
+### Chapter 2 — Efficient Attention & Kernel Optimization (✅ done)
 
 **Goal**: Break down Gemma's attention, then rewrite it three ways — basic PyTorch → JIT → Triton FlashAttention-2.
 
@@ -126,7 +126,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 3 — KV Cache Management & Paged Allocation
+### Chapter 3 — KV Cache Management & Paged Allocation (✅ done)
 
 **Goal**: Break down where GPU RAM goes during Gemma inference, then optimize KV memory with paged allocation.
 
@@ -139,7 +139,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 4 — Batching & Scheduling
+### Chapter 4 — Batching & Scheduling (✅ done)
 
 **Goal**: Maximize GPU utilization by processing multiple requests efficiently.
 
@@ -151,7 +151,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 5 — Runtime Optimization
+### Chapter 5 — Runtime Optimization (✅ done)
 
 **Goal**: Squeeze performance from the PyTorch runtime without changing model logic.
 
@@ -163,7 +163,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 6 — Hardware-Aware Design
+### Chapter 6 — Hardware-Aware Design (✅ done)
 
 **Goal**: Understand *why* the optimizations work — connect GPU hardware to every earlier chapter.
 
@@ -174,7 +174,7 @@ Complete hyperparameter set for `benchmarking_script.py`:
 
 ---
 
-### Chapter 7 — Quantization
+### Chapter 7 — Quantization (✅ done)
 
 **Goal**: Explain how quantization works, survey current methods, implement from scratch.
 
