@@ -1,11 +1,10 @@
 # Speed Up Inference — Project Plan
 
 ## Overview
-An educational, hands-on project demonstrating how to speed up LLM inference **from scratch**, using **Gemma-3 1B** as the base model, with **NVIDIA GPU + PyTorch** as the target platform.
 
-Each chapter has:
-- Python scripts (the core implementations)
-- A Jupyter notebook (`demo.ipynb`) for interactive walkthrough & visualization
+A **model-agnostic** educational project demonstrating how to speed up LLM inference **from scratch**. We use **Gemma-3 1B** as the running example, but every technique applies to any transformer-based model. Target platform: **NVIDIA GPU + PyTorch**.
+
+Each chapter has Python scripts (core implementations) + `demo.ipynb` (interactive walkthrough).
 
 ---
 
@@ -13,28 +12,29 @@ Each chapter has:
 
 ```
 Speed_up_Inference/
-├── README.md                          # Project overview, setup, table of contents
+├── README.md
 ├── requirements.txt
-├── pyproject.toml
 │
-├── 01_profiling_benchmarking/         # Chapter 1: Profiling & Benchmarking
-│   ├── benchmarking_script.py        #   End-to-end forward/backward benchmarking
-│   ├── nsys_profile.py               #   Nsight Systems profiling wrapper (NVTX)
+├── 01_profiling_benchmarking/         # Chapter 1: Profile before optimizing
+│   ├── benchmarking_script.py        #   Forward/backward timing (timeit + cuda.synchronize)
+│   ├── nsys_profile.py               #   Nsight Systems NVTX annotations
 │   ├── memory_profiling.py           #   GPU memory snapshots & peak tracking
-│   └── demo.ipynb                    #   Interactive walkthrough & analysis
+│   └── demo.ipynb
 │
-├── 02_efficient_attention/            # Chapter 2: Efficient Attention & Kernel Optimization
-│   ├── standard_attention.py
-│   ├── flash_attention.py
-│   ├── triton_fused_attention.py
+├── 02_efficient_attention/            # Chapter 2: Naive → JIT → Triton FlashAttention-2
+│   ├── gemma_attention_breakdown.py  #   Gemma GQA + RoPE structure walkthrough
+│   ├── naive_attention.py            #   Basic matmul attention (materializes N×N)
+│   ├── jit_attention.py              #   torch.jit.script fused attention
+│   ├── triton_flash_attention.py     #   FlashAttention-2 tiled Triton kernel
 │   ├── benchmark.py
 │   └── demo.ipynb
 │
-├── 03_kv_cache/                       # Chapter 3: KV Cache Management & Offloading
-│   ├── naive_kv_cache.py
-│   ├── static_kv_cache.py
-│   ├── paged_kv_cache.py
-│   ├── kv_offload.py
+├── 03_kv_cache/                       # Chapter 3: RAM breakdown + paged allocation
+│   ├── ram_breakdown.py              #   Where GPU memory goes (weights/activations/KV)
+│   ├── naive_kv_cache.py             #   Grow-on-every-token (dynamic allocation)
+│   ├── static_kv_cache.py            #   Pre-allocated fixed buffer
+│   ├── paged_kv_cache.py             #   Block manager (PagedAttention-style)
+│   ├── kv_offload.py                 #   CPU ↔ GPU offloading
 │   ├── benchmark.py
 │   └── demo.ipynb
 │
@@ -54,28 +54,28 @@ Speed_up_Inference/
 │   ├── benchmark.py
 │   └── demo.ipynb
 │
-├── 06_hardware_aware_design/          # Chapter 6: Hardware-Aware Design
+├── 06_hardware_aware_design/          # Chapter 6: Hardware Design (discussion-heavy)
 │   ├── memory_hierarchy.py
 │   ├── roofline_model.py
 │   ├── tensor_core_utilization.py
+│   ├── discussion.md
+│   └── demo.ipynb
+│
+├── 07_quantization/                   # Chapter 7: Quantization theory + from scratch
+│   ├── naive_quantization.py         #   absmax / zero-point / per-group INT8 & INT4
+│   ├── apply_quantization.py         #   Apply to model layers, measure quality loss
+│   ├── bitsandbytes_quant.py         #   Survey: bitsandbytes, GPTQ, AWQ, GGUF
 │   ├── benchmark.py
 │   └── demo.ipynb
 │
-├── 07_quantization/                   # Chapter 7: Model Compression via Quantization
-│   ├── naive_quantization.py
-│   ├── apply_quantization.py
-│   ├── bitsandbytes_quant.py
-│   ├── benchmark.py
-│   └── demo.ipynb
-│
-├── utils/                             # Shared utilities
+├── utils/                             # Shared utilities (model-agnostic)
 │   ├── __init__.py
-│   ├── model_loader.py
-│   ├── benchmarking.py
+│   ├── model_loader.py               #   Custom transformer + HuggingFace Gemma loader
+│   ├── benchmarking.py               #   Timer, memory tracker, throughput calc
 │   └── visualization.py
 │
 └── benchmarks/
-    ├── end_to_end.py
+    ├── end_to_end.py                  #   All optimizations combined — total speedup
     └── results/
 ```
 
@@ -83,65 +83,59 @@ Speed_up_Inference/
 
 ## Chapter Breakdown
 
-### Chapter 1 — Profiling & Benchmarking
+### Chapter 1 — Profiling & Benchmarking (✅ done)
 
-**Goal**: Before optimizing anything, profile the model to understand where time and memory are spent.
+**Goal**: Profile first, optimize second.
 
-1. **benchmarking_script.py** — End-to-end benchmarking
-   - Initialize a transformer model given hyperparameters (num_layers, hidden_dim, etc.)
-   - Generate a random batch of data
-   - Run `w` warm-up steps (not timed), then time `n` steps using `timeit.default_timer()`
-   - Support forward-only and forward+backward modes via CLI argument
-   - Call `torch.cuda.synchronize()` after each step for accurate GPU timing
-   - Report mean, std, min, max latency + throughput + GPU memory usage
+Complete hyperparameter set for `benchmarking_script.py`:
 
-2. **nsys_profile.py** — Nsight Systems profiling wrapper
-   - Wrap model execution with NVTX range annotations (forward pass, backward pass, optimizer step)
-   - Annotate individual layers: self-attention, MLP, LayerNorm, etc.
-   - Support profiling modes: forward-only, forward+backward, full training step (with AdamW)
-   - Generate `nsys`-compatible output for analysis in Nsight Systems GUI
-   - Designed to answer these key questions:
-     a. Does total forward pass time match Python-level measurements?
-     b. Which CUDA kernel takes the most cumulative GPU time? Same for fwd+bwd?
-     c. What non-matmul kernels account for non-trivial runtime?
-     d. How does matmul fraction change between inference vs full training step?
-     e. How does softmax runtime compare to matmul runtime in self-attention?
-
-3. **memory_profiling.py** — GPU memory profiling
-   - Record memory timelines via `torch.cuda.memory._record_memory_history()`
-   - Export snapshots for pytorch.org/memory_viz (Active Memory Timeline)
-   - Profile across context lengths (128, 256, 512) for forward / fwd+bwd / train
-   - Support mixed-precision (FP16 via torch.amp)
-   - Calculate theoretical activation tensor sizes
-   - Designed to answer:
-     a. Memory timeline shape: can you identify forward/backward/optimizer stages from peaks?
-     b. Peak memory table by context length (forward vs. full training step)
-     c. Mixed-precision impact on peak memory
-     d. Theoretical size of a residual-stream activation tensor
-     e. What allocations remain visible at reduced detail levels in memory_viz?
+| Category | Parameter | CLI flag | Default | Notes |
+|----------|-----------|----------|---------|-------|
+| Model | num_layers | `--num_layers` | 6 | Transformer layers |
+| | hidden_dim | `--hidden_dim` | 1024 | Embedding dimension |
+| | num_heads | `--num_heads` | 8 | Attention heads |
+| | num_kv_heads | `--num_kv_heads` | 8 | KV heads (=num_heads → MHA; < → GQA) |
+| | intermediate_dim | `--intermediate_dim` | auto | MLP width (default 8/3×hidden, rounded to 64) |
+| | vocab_size | `--vocab_size` | 32000 | |
+| | max_seq_len | `--max_seq_len` | 2048 | |
+| Data | batch_size | `--batch_size` | 8 | |
+| | seq_len | `--seq_len` | 512 | |
+| Precision | dtype | `--dtype` | float32 | float32 / float16 / bfloat16 |
+| Timing | warmup | `--warmup` | 5 | Untimed steps (fill CUDA caches, JIT) |
+| | steps | `--steps` | 20 | Measured steps |
+| | mode | `--mode` | forward | forward / backward / train |
+| Optimizer | lr | `--lr` | 1e-4 | Used in train mode |
+| | optimizer | `--optimizer` | adamw | adamw / sgd |
+| Device | device | `--device` | cuda | cuda / cpu |
+| Source | model_name | `--model_name` | custom | "custom" or HuggingFace ID |
 
 ---
 
 ### Chapter 2 — Efficient Attention & Kernel Optimization
 
-**Goal**: Show why attention is the bottleneck and how to fix it with better algorithms + custom kernels.
+**Goal**: Break down Gemma's attention, then rewrite it three ways — basic PyTorch → JIT → Triton FlashAttention-2.
 
-1. **Standard attention** — naive O(n²) implementation, measure memory
-2. **Flash Attention** — explain the tiling algorithm, use `torch.nn.functional.scaled_dot_product_attention`
-3. **Custom Triton kernel** — write a fused attention kernel in Triton from scratch
-4. **Benchmark**: Sequence length sweep (512 → 4096), wall-clock & peak memory
+1. **gemma_attention_breakdown.py** — Dissect Gemma's actual attention (GQA, RoPE, head dims, tensor shapes at each step)
+2. **naive_attention.py** — Explicit `Q @ K.T → softmax → @ V`; materializes full N×N matrix; O(N²) memory
+3. **jit_attention.py** — `torch.jit.script` version; show what the JIT fuses and measure speedup
+4. **triton_flash_attention.py** — FlashAttention-2 [Dao 2023] in Triton from scratch:
+   - Tile Q/K/V across sequence dimension (never materialize full N×N)
+   - Online softmax with running max + running sum
+   - Efficient HBM ↔ SRAM access patterns → O(N) memory, significant wall-clock speedup
+5. **Benchmark**: Sequence length sweep 512→8192, wall-clock + peak memory for all three
 
 ---
 
-### Chapter 3 — KV Cache Management & Offloading
+### Chapter 3 — KV Cache Management & Paged Allocation
 
-**Goal**: Show how KV caching works in autoregressive generation and optimize memory usage.
+**Goal**: Break down where GPU RAM goes during Gemma inference, then optimize KV memory with paged allocation.
 
-1. **Naive cache** — append KV tensors each step (dynamic allocation)
-2. **Static pre-allocated cache** — fixed buffer, pointer management
-3. **Paged KV cache** — block-based allocation inspired by PagedAttention
-4. **CPU offloading** — swap old KV blocks to CPU, prefetch on demand
-5. **Benchmark**: Max batch size at fixed sequence length, generation throughput
+1. **ram_breakdown.py** — Decompose GPU memory: weights, activations, KV cache, optimizer state; show how KV grows with batch×seq_len
+2. **naive_kv_cache.py** — Append tensors each step (dynamic, fragmented)
+3. **static_kv_cache.py** — Pre-allocate max_seq_len buffer
+4. **paged_kv_cache.py** — Block-based allocation (block table: logical positions → physical blocks); enables KV sharing across beams
+5. **kv_offload.py** — Swap old blocks to CPU, prefetch on demand
+6. **Benchmark**: Max batch size, generation throughput, memory utilization
 
 ---
 
@@ -149,10 +143,10 @@ Speed_up_Inference/
 
 **Goal**: Maximize GPU utilization by processing multiple requests efficiently.
 
-1. **Static batching** — pad all sequences to max length
-2. **Dynamic batching** — group by similar length, bucket strategy
-3. **Continuous batching** — add/remove sequences mid-generation
-4. **Scheduler** — FCFS + priority-based request scheduling
+1. **static_batching.py** — Pad to max length (simple but wasteful)
+2. **dynamic_batching.py** — Group by similar length (bucket strategy)
+3. **continuous_batching.py** — Add/remove sequences mid-generation (in-flight batching)
+4. **scheduler.py** — FCFS + priority-based request scheduling
 5. **Benchmark**: Throughput (tokens/sec) at various concurrent request counts
 
 ---
@@ -161,84 +155,42 @@ Speed_up_Inference/
 
 **Goal**: Squeeze performance from the PyTorch runtime without changing model logic.
 
-1. **torch.compile** — default, reduce-overhead, max-autotune modes
-2. **CUDA Graphs** — capture and replay static computation graphs
-3. **Operator fusion** — manual fusion examples (LayerNorm + Linear)
-4. **Mixed precision** — FP16, BF16, TF32 comparison
-5. **Benchmark**: Latency breakdown before/after each optimization
+1. **torch_compile_demo.py** — `torch.compile` with default / reduce-overhead / max-autotune modes
+2. **cuda_graphs.py** — Capture + replay static computation graphs; eliminate Python overhead
+3. **operator_fusion.py** — Manual fusion: RMSNorm + Linear, SiLU + mul (gated MLP)
+4. **mixed_precision.py** — FP16 / BF16 / TF32; AMP autocast comparison
+5. **Benchmark**: Latency before/after each optimization, cumulative speedup
 
 ---
 
 ### Chapter 6 — Hardware-Aware Design
 
-**Goal**: Understand *why* these optimizations work by analyzing hardware characteristics.
+**Goal**: Understand *why* the optimizations work — connect GPU hardware to every earlier chapter.
 
-1. **Memory hierarchy** — L1/L2/HBM bandwidth, how data moves
-2. **Roofline model** — plot ops vs memory bandwidth, identify if compute or memory bound
-3. **Tensor cores** — which shapes trigger tensor core paths, alignment rules
-4. **Profiling** — `torch.profiler` traces, reading Nsight Systems timelines
-5. **Benchmark**: Before/after roofline position for each optimization from prior chapters
-
----
-
-### Chapter 7 — Quantization (from scratch)
-
-**Goal**: Understand what quantization does at the math level, then apply it to Gemma-3 1B.
-
-1. **Naive implementation**
-   - Absmax symmetric quantization (FP32 → INT8)
-   - Zero-point asymmetric quantization (FP32 → INT8)
-   - Per-tensor vs per-channel vs per-group granularity
-   - Extend to INT4 (pack two values per byte)
-   - Dequantize and measure error (MSE, max-abs-error)
-
-2. **Apply to Gemma**
-   - Replace `nn.Linear` weights with quantized versions
-   - Run inference, measure latency + memory + perplexity on WikiText-2
-
-3. **Library comparison**
-   - `bitsandbytes` INT8 (LLM.int8()) and NF4
-   - Brief note on GPTQ / AWQ (not from scratch, but show usage)
-
-4. **Benchmark**: Table comparing FP32 / FP16 / INT8-naive / INT4-naive / bitsandbytes
+1. **memory_hierarchy.py** — L1/L2/HBM bandwidth numbers; arithmetic intensity for each layer type
+2. **roofline_model.py** — Plot ops vs bandwidth; show whether each layer is compute-bound or memory-bound
+3. **tensor_core_utilization.py** — Which tensor shapes hit tensor cores; alignment rules; practical implications
+4. **discussion.md** — Hardware challenge narrative: why LLM inference is memory-bandwidth-bound for small batch, compute-bound for large batch; how each chapter's technique moves the operating point
 
 ---
 
-## Implementation Order
+### Chapter 7 — Quantization
 
-1. `utils/` — model loader, benchmarking, visualization (shared foundation)
-2. Chapter 1 — Profiling & Benchmarking (understand the baseline first)
-3. Chapter 2 — Efficient Attention
-4. Chapter 3 — KV Cache
-5. Chapter 4 — Batching & Scheduling
-6. Chapter 5 — Runtime Optimization
-7. Chapter 6 — Hardware-Aware Design
-8. Chapter 7 — Quantization
-9. `benchmarks/end_to_end.py` — combine all optimizations
+**Goal**: Explain how quantization works, survey current methods, implement from scratch.
+
+1. **naive_quantization.py** — absmax INT8, zero-point INT8, per-group INT4 (pack 2 values/byte); measure MSE/max-abs-error
+2. **apply_quantization.py** — Replace Gemma `nn.Linear` with quantized layers; measure latency + memory + perplexity
+3. **bitsandbytes_quant.py** — Survey + comparison: bitsandbytes LLM.int8/NF4, GPTQ, AWQ, GGUF
+4. **Benchmark**: FP32 / FP16 / INT8-naive / INT4-naive / bitsandbytes / GPTQ
 
 ---
 
-## Dependencies
-
-```
-torch >= 2.2
-transformers >= 4.40
-bitsandbytes
-triton
-matplotlib
-numpy
-datasets  (for WikiText-2 perplexity eval)
-jupyter
-tqdm
-```
-
----
-
-## Key Design Decisions (already made)
+## Key Design Decisions
 
 | Decision | Choice |
 |----------|--------|
-| Base model | Gemma-3 1B (small, fast iteration) |
+| Base model | Gemma-3 1B (running example; project is model-agnostic) |
 | Format | Python scripts + Jupyter notebooks |
-| Quantization | From-scratch first, then library comparison |
+| Quantization | Theory first, from-scratch implementation, then library survey |
 | Target hardware | NVIDIA GPU + PyTorch (CUDA, Triton, torch.compile) |
+| Philosophy | Every technique is model-agnostic; Gemma is the concrete example |
